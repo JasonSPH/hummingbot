@@ -57,7 +57,7 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
             is_updatable=True,
             prompt=lambda mi: "Enter the activation bounds for the orders "
             "(e.g., 0.01 activates the next order when the price is closer than 1%): ",
-            prompt_on_new=False,
+            prompt_on_new=True,
         ),
     )
     candles_connector: str = Field(
@@ -77,21 +77,32 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
     interval: str = Field(
         default="5m",
         client_data=ClientFieldData(
-            prompt=lambda mi: "Enter the candle interval (e.g., 1m, 5m, 1h, 1d): ", prompt_on_new=False
+            is_updatable=True,
+            prompt=lambda mi: "Enter the candle interval (e.g., 1m, 5m, 1h, 1d): ",
+            prompt_on_new=False,
         ),
     )
-
     macd_fast: int = Field(
-        default=12, client_data=ClientFieldData(prompt=lambda mi: "Enter the MACD fast length: ", prompt_on_new=True)
+        default=12,
+        client_data=ClientFieldData(
+            is_updatable=True, prompt=lambda mi: "Enter the MACD fast length: ", prompt_on_new=True
+        ),
     )
     macd_slow: int = Field(
-        default=26, client_data=ClientFieldData(prompt=lambda mi: "Enter the MACD slow length: ", prompt_on_new=True)
+        default=26,
+        client_data=ClientFieldData(
+            is_updatable=True, prompt=lambda mi: "Enter the MACD slow length: ", prompt_on_new=True
+        ),
     )
     macd_signal: int = Field(
-        default=9, client_data=ClientFieldData(prompt=lambda mi: "Enter the MACD signal length: ", prompt_on_new=True)
+        default=9,
+        client_data=ClientFieldData(
+            is_updatable=True, prompt=lambda mi: "Enter the MACD signal length: ", prompt_on_new=True
+        ),
     )
     natr_length: int = Field(
-        default=14, client_data=ClientFieldData(prompt=lambda mi: "Enter the NATR length: ", prompt_on_new=True)
+        default=14,
+        client_data=ClientFieldData(is_updatable=True, prompt=lambda mi: "Enter the NATR length: ", prompt_on_new=True),
     )
 
     @validator("candles_connector", pre=True, always=True)
@@ -167,6 +178,12 @@ class DManMakerV2(MarketMakingControllerBase):
         ]
 
     async def update_processed_data(self):
+        orderbook = self.market_data_provider.get_order_book(
+            connector_name=self.config.connector_name, trading_pair=self.config.trading_pair
+        )
+        bid_volume = sum([x.amount for x in list(orderbook.bid_entries())[:5]])
+        ask_volume = sum([x.amount for x in list(orderbook.ask_entries())[:5]])
+        print(bid_volume, ask_volume)
         candles = self.market_data_provider.get_candles_df(
             connector_name=self.config.candles_connector,
             trading_pair=self.config.candles_trading_pair,
@@ -183,6 +200,9 @@ class DManMakerV2(MarketMakingControllerBase):
         macdh_signal = macdh.apply(lambda x: 1 if x > 0 else -1)
         max_price_shift = natr / 2
         price_multiplier = ((0.5 * macd_signal + 0.5 * macdh_signal) * max_price_shift).iloc[-1]
+        print(f"price_multiplier: {price_multiplier}")
+        print(f"spread_multiplier: {natr.iloc[-1]}")
+        # print(f"bid volume: {bid_volume}, ask volume: {ask_volume}")
         candles["spread_multiplier"] = natr
         candles["reference_price"] = candles["close"] * (1 + price_multiplier)
         self.processed_data = {
