@@ -177,13 +177,44 @@ class DManMakerV2(MarketMakingControllerBase):
             for executor in executors_to_refresh
         ]
 
+    def executors_to_early_stop(self) -> List[ExecutorAction]:
+        long_executors = self.filter_executors(
+            executors=self.executors_info,
+            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0
+        )
+
+        short_executors = self.filter_executors(
+            executors=self.executors_info,
+            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0
+        )
+
+        if long_executors and short_executors:
+            for long_exec in long_executors:
+                for short_exec in short_executors:
+                    # 检查 filled_amount 是否为相反数
+                    if long_exec.custom_info['filled_amount'] == -short_exec.custom_info['filled_amount']:
+                        # 检查做空的 current_position_average_price 是否高于做多的
+                        if short_exec.custom_info['current_position_average_price'] > long_exec.custom_info['current_position_average_price']:
+                            # 返回这两个执行器
+                            print("Cancelling two matching executors!")
+                            return [StopExecutorAction(controller_id=self.config.id, executor_id=executor.id) for executor in [long_exec, short_exec]]
+        return []
+
     async def update_processed_data(self):
-        orderbook = self.market_data_provider.get_order_book(
+        ob_snapshot = self.market_data_provider.get_order_book_snapshot(
             connector_name=self.config.connector_name, trading_pair=self.config.trading_pair
         )
-        bid_volume = sum([x.amount for x in list(orderbook.bid_entries())[:5]])
-        ask_volume = sum([x.amount for x in list(orderbook.ask_entries())[:5]])
-        print(bid_volume, ask_volume)
+        price_b0 = ob_snapshot[0].price.iloc[0]
+        price_a0 = ob_snapshot[1].price.iloc[0]
+        volume_b0 = ob_snapshot[0].amount.iloc[0]
+        volume_a0 = ob_snapshot[1].amount.iloc[0]
+        imbalance = (volume_b0 - volume_a0) / (volume_b0 + volume_a0)
+        price_mid = (price_a0 + price_b0) / 2
+        tick_size = (price_a0 - price_b0) / price_mid
+        fee_rebate = 0.00003
+        half_spread = (tick_size + fee_rebate) / 2
+        theta = 0.6 * half_spread + 0.4
+        price_reference = price_mid + theta * 0.5 * (imbalance**3 + imbalance) * (price_a0 - price_b0)
         candles = self.market_data_provider.get_candles_df(
             connector_name=self.config.candles_connector,
             trading_pair=self.config.candles_trading_pair,
@@ -200,14 +231,9 @@ class DManMakerV2(MarketMakingControllerBase):
         macdh_signal = macdh.apply(lambda x: 1 if x > 0 else -1)
         max_price_shift = natr / 2
         price_multiplier = ((0.5 * macd_signal + 0.5 * macdh_signal) * max_price_shift).iloc[-1]
-        print(f"price_multiplier: {price_multiplier}")
-        print(f"spread_multiplier: {natr.iloc[-1]}")
-        # print(f"bid volume: {bid_volume}, ask volume: {ask_volume}")
-        candles["spread_multiplier"] = natr
-        candles["reference_price"] = candles["close"] * (1 + price_multiplier)
         self.processed_data = {
-            "reference_price": Decimal(candles["reference_price"].iloc[-1]),
-            "spread_multiplier": Decimal(candles["spread_multiplier"].iloc[-1]),
+            "reference_price": Decimal(price_reference * (1 + price_multiplier)),
+            "spread_multiplier": Decimal(natr.iloc[-1]),
             "features": candles,
         }
 
@@ -235,3 +261,11 @@ class DManMakerV2(MarketMakingControllerBase):
             activation_bounds=self.config.executor_activation_bounds,
             leverage=self.config.leverage,
         )
+
+    def to_format_status(self):
+        lines = ['=' * 50]
+        for tp, pos_info in self.market_data_provider.get_connector(self.config.connector_name).account_positions.items():
+            if tp.startswith(self.config.trading_pair):
+                lines.append(f"{self.config.trading_pair} {pos_info.position_side} Amount: {pos_info.amount} Entry Price: {pos_info.entry_price} Unrealized PnL: {pos_info.unrealized_pnl}")
+        lines.append('=' * 50)
+        return lines
