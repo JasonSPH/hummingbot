@@ -2,7 +2,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
 
-from hummingbot.core.data_type.common import TradeType
+from hummingbot.core.data_type.common import PositionAction, TradeType
 from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
 from hummingbot.strategy_v2.executors.position_executor.data_types import TrailingStop
 
@@ -25,5 +25,6 @@ class DCAExecutorConfig(ExecutorConfigBase):
     trailing_stop: Optional[TrailingStop] = None
     time_limit: Optional[int] = None
     mode: DCAMode = DCAMode.MAKER
+    position_action: PositionAction = PositionAction.OPEN
     activation_bounds: Optional[List[Decimal]] = None
     level_id: Optional[str] = None

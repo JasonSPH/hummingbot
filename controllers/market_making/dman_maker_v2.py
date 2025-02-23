@@ -5,7 +5,7 @@ import pandas_ta as ta  # noqa: F401
 from pydantic import Field, validator
 
 from hummingbot.client.config.config_data_types import ClientFieldData
-from hummingbot.core.data_type.common import TradeType
+from hummingbot.core.data_type.common import PositionAction, PositionSide, TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.market_making_controller_base import (
     MarketMakingControllerBase,
@@ -152,6 +152,7 @@ class DManMakerV2(MarketMakingControllerBase):
     def __init__(self, config: DManMakerV2Config, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
+        self.position_action = PositionAction.OPEN
         self.max_records = max(config.macd_slow, config.macd_fast, config.macd_signal, config.natr_length) + 100
         self.dca_amounts_pct = [Decimal(amount) / sum(self.config.dca_amounts) for amount in self.config.dca_amounts]
         self.spreads = self.config.dca_spreads
@@ -231,6 +232,18 @@ class DManMakerV2(MarketMakingControllerBase):
         macdh_signal = macdh.apply(lambda x: 1 if x > 0 else -1)
         max_price_shift = natr / 2
         price_multiplier = ((0.5 * macd_signal + 0.5 * macdh_signal) * max_price_shift).iloc[-1]
+
+        long_amount = 0
+        short_amount = 0
+        for tp, pos_info in self.market_data_provider.get_connector(self.config.connector_name).account_positions.items():
+            if tp.startswith(self.config.trading_pair):
+                long_amount += pos_info.amount if pos_info.position_side == PositionSide.LONG else 0
+                short_amount += pos_info.amount if pos_info.position_side == PositionSide.SHORT else 0
+        if long_amount * Decimal(price_mid) > self.config.total_amount_quote and short_amount * Decimal(price_mid) > self.config.total_amount_quote:
+            self.position_action = PositionAction.CLOSE
+        else:
+            self.position_action = PositionAction.OPEN
+
         self.processed_data = {
             "reference_price": Decimal(price_reference * (1 + price_multiplier)),
             "spread_multiplier": Decimal(natr.iloc[-1]),
@@ -250,6 +263,7 @@ class DManMakerV2(MarketMakingControllerBase):
             connector_name=self.config.connector_name,
             trading_pair=self.config.trading_pair,
             mode=DCAMode.MAKER,
+            position_action=self.position_action,
             side=trade_type,
             prices=prices,
             amounts_quote=amounts_quote,

@@ -260,9 +260,11 @@ class DCAExecutor(ExecutorBase):
                 )
             order_candidates.append(order_candidate)
         adjusted_order_candidates = self.adjust_order_candidates(self.config.connector_name, order_candidates)
-        if any([order_candidate.amount == Decimal("0") for order_candidate in adjusted_order_candidates]):
-            self.close_execution_by(CloseType.INSUFFICIENT_BALANCE)
-            self.logger().error("Not enough budget to create DCA.")
+
+        if self.config.position_action == PositionAction.OPEN:
+            if any([order_candidate.amount == Decimal("0") for order_candidate in adjusted_order_candidates]):
+                self.close_execution_by(CloseType.INSUFFICIENT_BALANCE)
+                self.logger().error("Not enough budget to create DCA.")
 
     async def control_task(self):
         """
@@ -296,7 +298,7 @@ class DCAExecutor(ExecutorBase):
         order_id = self.place_order(connector_name=self.config.connector_name,
                                     trading_pair=self.config.trading_pair, order_type=self.open_order_type,
                                     side=self.config.side, amount=amount, price=price,
-                                    position_action=PositionAction.OPEN)
+                                    position_action=self.config.position_action)
         if order_id:
             self._open_orders.append(TrackedOrder(order_id=order_id))
 
