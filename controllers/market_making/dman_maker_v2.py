@@ -25,27 +25,36 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
 
     # DCA configuration
     dca_spreads: List[Decimal] = Field(
-        default="0.01,0.02,0.04,0.08",
+        default="0.01,0.02",
         client_data=ClientFieldData(
-            prompt_on_new=True, prompt=lambda mi: "Enter a comma-separated list of spreads for each DCA level: "
+            is_updatable=True,
+            prompt_on_new=True,
+            prompt=lambda mi: "Enter a comma-separated list of spreads for each DCA level: "
         ),
     )
     dca_amounts: List[Decimal] = Field(
-        default="0.1,0.2,0.4,0.8",
+        default="0.1,0.2",
         client_data=ClientFieldData(
-            prompt_on_new=True, prompt=lambda mi: "Enter a comma-separated list of amounts for each DCA level: "
+            is_updatable=True,
+            prompt_on_new=True,
+            prompt=lambda mi: "Enter a comma-separated list of amounts for each DCA level: "
         ),
     )
     time_limit: int = Field(
         default=60 * 60,
         gt=0,
-        client_data=ClientFieldData(prompt=lambda mi: "Enter the time limit for each DCA level: ", prompt_on_new=False),
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt=lambda mi: "Enter the time limit for each DCA level: ",
+            prompt_on_new=False),
     )
     stop_loss: Decimal = Field(
         default=Decimal("0.03"),
         gt=0,
         client_data=ClientFieldData(
-            prompt=lambda mi: "Enter the stop loss (as a decimal, e.g., 0.03 for 3%): ", prompt_on_new=True
+            is_updatable=True,
+            prompt=lambda mi: "Enter the stop loss (as a decimal, e.g., 0.03 for 3%): ",
+            prompt_on_new=True
         ),
     )
     top_executor_refresh_time: Optional[float] = Field(
@@ -82,27 +91,20 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
             prompt_on_new=False,
         ),
     )
-    macd_fast: int = Field(
-        default=12,
-        client_data=ClientFieldData(
-            is_updatable=True, prompt=lambda mi: "Enter the MACD fast length: ", prompt_on_new=True
-        ),
-    )
-    macd_slow: int = Field(
-        default=26,
-        client_data=ClientFieldData(
-            is_updatable=True, prompt=lambda mi: "Enter the MACD slow length: ", prompt_on_new=True
-        ),
-    )
-    macd_signal: int = Field(
-        default=9,
-        client_data=ClientFieldData(
-            is_updatable=True, prompt=lambda mi: "Enter the MACD signal length: ", prompt_on_new=True
-        ),
-    )
     natr_length: int = Field(
         default=14,
-        client_data=ClientFieldData(is_updatable=True, prompt=lambda mi: "Enter the NATR length: ", prompt_on_new=True),
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt=lambda mi: "Enter the NATR length: ",
+            prompt_on_new=True),
+    )
+    eagerness: int = Field(
+        default = 1,
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt=lambda mi: "Enter the eagerness: ",
+            prompt_on_new=False,
+        )
     )
 
     @validator("candles_connector", pre=True, always=True)
@@ -153,9 +155,11 @@ class DManMakerV2(MarketMakingControllerBase):
         super().__init__(config, *args, **kwargs)
         self.config = config
         self.position_action = PositionAction.OPEN
-        self.max_records = max(config.macd_slow, config.macd_fast, config.macd_signal, config.natr_length) + 100
+        self.max_records = config.natr_length * 2
         self.dca_amounts_pct = [Decimal(amount) / sum(self.config.dca_amounts) for amount in self.config.dca_amounts]
         self.spreads = self.config.dca_spreads
+        self.long_filled_executors = []
+        self.short_filled_executors = []
 
     def first_level_refresh_condition(self, executor):
         if self.config.top_executor_refresh_time is not None:
@@ -179,26 +183,26 @@ class DManMakerV2(MarketMakingControllerBase):
         ]
 
     def executors_to_early_stop(self) -> List[ExecutorAction]:
-        long_executors = self.filter_executors(
+        self.long_filled_executors = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0
+            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0 and x.custom_info['side'] == TradeType.BUY
         )
 
-        short_executors = self.filter_executors(
+        self.short_filled_executors = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0
+            filter_func=lambda x: x.is_trading and x.custom_info['filled_amount'] > 0 and x.custom_info['side'] == TradeType.SELL
         )
 
-        if long_executors and short_executors:
-            for long_exec in long_executors:
-                for short_exec in short_executors:
-                    # 检查 filled_amount 是否为相反数
-                    if long_exec.custom_info['filled_amount'] == -short_exec.custom_info['filled_amount']:
-                        # 检查做空的 current_position_average_price 是否高于做多的
-                        if short_exec.custom_info['current_position_average_price'] > long_exec.custom_info['current_position_average_price']:
-                            # 返回这两个执行器
-                            print("Cancelling two matching executors!")
-                            return [StopExecutorAction(controller_id=self.config.id, executor_id=executor.id) for executor in [long_exec, short_exec]]
+        if self.long_filled_executors:
+            print(f"Long executors filled: {[(x.custom_info['filled_amount'], x.custom_info['current_position_average_price']) for x in self.long_filled_executors]}")
+        if self.short_filled_executors:
+            print(f"Short executors filled: {[(x.custom_info['filled_amount'], x.custom_info['current_position_average_price']) for x in self.short_filled_executors]}")
+
+        if self.long_filled_executors and self.short_filled_executors:
+            if sum([x.custom_info['filled_amount'] for x in self.long_filled_executors]) == sum([x.custom_info['filled_amount'] for x in self.short_filled_executors]):
+                if sum([x.custom_info['current_position_average_price'] * x.custom_info['filled_amount'] for x in self.long_filled_executors]) * Decimal(1 - 0.0005) < sum([x.custom_info['current_position_average_price'] * x.custom_info['filled_amount'] for x in self.short_filled_executors]):
+                    print("Cancelling all executors!")
+                    return [StopExecutorAction(controller_id=self.config.id, executor_id=executor.id, keep_position=True) for executor in self.long_filled_executors + self.short_filled_executors]
         return []
 
     async def update_processed_data(self):
@@ -215,7 +219,7 @@ class DManMakerV2(MarketMakingControllerBase):
         fee_rebate = 0.00003
         half_spread = (tick_size + fee_rebate) / 2
         theta = 0.6 * half_spread + 0.4
-        price_reference = price_mid + theta * 0.5 * (imbalance**3 + imbalance) * (price_a0 - price_b0)
+        price_reference = Decimal(price_mid + theta * 0.5 * (imbalance**3 + imbalance) * (price_a0 - price_b0))
         candles = self.market_data_provider.get_candles_df(
             connector_name=self.config.candles_connector,
             trading_pair=self.config.candles_trading_pair,
@@ -223,15 +227,6 @@ class DManMakerV2(MarketMakingControllerBase):
             max_records=self.max_records,
         )
         natr = ta.natr(candles["high"], candles["low"], candles["close"], length=self.config.natr_length) / 100
-        macd_output = ta.macd(
-            candles["close"], fast=self.config.macd_fast, slow=self.config.macd_slow, signal=self.config.macd_signal
-        )
-        macd = macd_output[f"MACD_{self.config.macd_fast}_{self.config.macd_slow}_{self.config.macd_signal}"]
-        macd_signal = -(macd - macd.mean()) / macd.std()
-        macdh = macd_output[f"MACDh_{self.config.macd_fast}_{self.config.macd_slow}_{self.config.macd_signal}"]
-        macdh_signal = macdh.apply(lambda x: 1 if x > 0 else -1)
-        max_price_shift = natr / 2
-        price_multiplier = ((0.5 * macd_signal + 0.5 * macdh_signal) * max_price_shift).iloc[-1]
 
         long_amount = 0
         short_amount = 0
@@ -239,13 +234,20 @@ class DManMakerV2(MarketMakingControllerBase):
             if tp.startswith(self.config.trading_pair):
                 long_amount += pos_info.amount if pos_info.position_side == PositionSide.LONG else 0
                 short_amount += pos_info.amount if pos_info.position_side == PositionSide.SHORT else 0
-        if long_amount * Decimal(price_mid) > self.config.total_amount_quote and short_amount * Decimal(price_mid) > self.config.total_amount_quote:
+        if long_amount * Decimal(price_mid) > self.config.total_amount_quote and abs(short_amount) * Decimal(price_mid) > self.config.total_amount_quote:
+            print("Starting executors to close positions!")
             self.position_action = PositionAction.CLOSE
         else:
             self.position_action = PositionAction.OPEN
 
+        long_filled = sum([x.custom_info['filled_amount'] for x in self.long_filled_executors])
+        short_filled = sum([x.custom_info['filled_amount'] for x in self.short_filled_executors])
+        diff_filled = (short_filled - long_filled) * Decimal(price_mid) / (self.config.total_amount_quote / 2)
+        price_shift = Decimal(natr.iloc[-1]) / 2 * diff_filled ** 3 * (1 + self.config.eagerness)
+        print(f"Long filled: {long_filled}, Short filled: {short_filled}, Diff filled: {diff_filled}, Price shift: {price_shift * 100:.2f}%")
+
         self.processed_data = {
-            "reference_price": Decimal(price_reference * (1 + price_multiplier)),
+            "reference_price": Decimal(price_reference * (1 + price_shift)),
             "spread_multiplier": Decimal(natr.iloc[-1]),
             "features": candles,
         }
