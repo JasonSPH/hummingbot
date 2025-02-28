@@ -243,7 +243,7 @@ class DManMakerV2(MarketMakingControllerBase):
         long_filled = sum([x.custom_info['filled_amount'] for x in self.long_filled_executors])
         short_filled = sum([x.custom_info['filled_amount'] for x in self.short_filled_executors])
         diff_filled = (short_filled - long_filled) * Decimal(price_mid) / (self.config.total_amount_quote / 2)
-        price_shift = Decimal(natr.iloc[-1]) / 2 * diff_filled ** 3 * (1 + self.config.eagerness)
+        price_shift = Decimal(natr.iloc[-1]) / 2 * (diff_filled ** 3 + diff_filled) * Decimal(0.5) * (1 + self.config.eagerness)
         print(f"Long filled: {long_filled}, Short filled: {short_filled}, Diff filled: {diff_filled}, Price shift: {price_shift * 100:.2f}%")
 
         self.processed_data = {
